@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#315c3b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Backroad">
+<link rel="manifest" href="/manifest.webmanifest">
+<title>Backroad — Scenic Route Planner</title>
+<script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+<link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet">
+<style>
+  :root { --ink:#172019; --muted:#687269; --panel:rgba(250,249,244,.96); --line:#d9ddd3; --moss:#315c3b; --lime:#b9e769; --orange:#e87335; }
+  * { box-sizing:border-box; }
+  body { margin:0; color:var(--ink); font-family:Inter,ui-sans-serif,system-ui,sans-serif; background:#dde4da; }
+  button,input,select { font:inherit; }
+  #map { position:fixed; inset:0; }
+  #controls { position:fixed; z-index:2; top:16px; left:16px; bottom:16px; width:360px; display:flex; flex-direction:column; overflow:hidden; border:1px solid rgba(34,54,39,.13); border-radius:22px; background:var(--panel); box-shadow:0 18px 60px rgba(25,42,29,.22); backdrop-filter:blur(18px); }
+  .panel-scroll { padding:22px; overflow-y:auto; }
+  .brand { display:flex; justify-content:space-between; align-items:start; gap:12px; }
+  .eyebrow { color:var(--moss); font-size:10px; font-weight:800; letter-spacing:.18em; text-transform:uppercase; }
+  h1 { margin:3px 0 0; font-family:Georgia,serif; font-size:29px; font-weight:500; letter-spacing:-.03em; }
+  .beta { padding:5px 8px; border-radius:999px; color:var(--moss); background:#e6eddc; font-size:10px; font-weight:800; letter-spacing:.08em; }
+  .intro { margin:9px 0 18px; color:var(--muted); font-size:12px; line-height:1.45; }
+  .field { display:block; margin-top:14px; }
+  .field-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:7px; }
+  .field-title { font-size:11px; font-weight:800; letter-spacing:.07em; text-transform:uppercase; }
+  .field-value { color:var(--moss); font-size:12px; font-weight:800; }
+  select,input[type="text"] { width:100%; padding:11px 12px; color:var(--ink); background:#fff; border:1px solid var(--line); border-radius:11px; outline:none; }
+  select:focus,input:focus { border-color:#729177; box-shadow:0 0 0 3px rgba(49,92,59,.1); }
+  input[type="range"] { width:100%; accent-color:var(--moss); cursor:pointer; }
+  #modeHint { min-height:34px; margin-top:7px; color:var(--muted); font-size:11px; line-height:1.45; }
+  #pinStatus { display:grid; gap:7px; margin-top:13px; }
+  .pin-row { display:flex; align-items:center; gap:9px; padding:9px 10px; background:#eef1e9; border-radius:10px; font-size:11px; }
+  .pin-dot { width:9px; height:9px; flex:0 0 auto; border-radius:50%; background:#aab3aa; box-shadow:0 0 0 4px rgba(170,179,170,.18); }
+  .pin-row.ready .pin-dot { background:var(--moss); box-shadow:0 0 0 4px rgba(49,92,59,.14); }
+  .pin-row.target.ready .pin-dot { background:var(--orange); box-shadow:0 0 0 4px rgba(232,115,53,.14); }
+  .preference { padding:12px 0; border-top:1px solid var(--line); }
+  .preference:first-child { border-top:0; }
+  .preference small { display:block; margin-top:3px; color:var(--muted); font-size:10px; line-height:1.35; }
+  .safety-toggle { display:flex; align-items:flex-start; gap:10px; padding:11px 12px; margin:5px 0 11px; border:1px solid #cbd8c8; border-radius:11px; background:#edf3e9; cursor:pointer; }
+  .safety-toggle input { width:17px; height:17px; margin:1px 0 0; accent-color:var(--moss); }
+  .safety-toggle span { display:block; font-size:12px; font-weight:800; }
+  .safety-toggle small { display:block; margin-top:3px; color:var(--muted); font-size:9px; font-weight:400; line-height:1.35; }
+  .actions { display:grid; grid-template-columns:1fr auto; gap:8px; margin-top:16px; }
+  button { border:0; border-radius:12px; cursor:pointer; }
+  #generate { padding:13px 16px; color:white; background:var(--moss); font-weight:800; box-shadow:0 7px 18px rgba(49,92,59,.2); }
+  #generate:hover { background:#264b30; }
+  #generate:disabled { cursor:wait; opacity:.62; }
+  #clearPins { padding:13px 14px; color:var(--muted); background:#ecefe8; font-weight:700; }
+  details { margin-top:14px; color:var(--muted); font-size:11px; }
+  details summary { cursor:pointer; font-weight:700; }
+  .advanced { display:grid; gap:8px; margin-top:9px; }
+  #result { display:none; margin-top:17px; padding:14px; color:white; background:#1d2c21; border-radius:14px; }
+  #result.visible { display:block; }
+  .result-kicker { color:var(--lime); font-size:9px; font-weight:900; letter-spacing:.14em; text-transform:uppercase; }
+  .result-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:7px; margin-top:9px; }
+  .metric { padding:8px; background:rgba(255,255,255,.07); border-radius:9px; }
+  .metric strong { display:block; font-family:Georgia,serif; font-size:18px; font-weight:500; }
+  .metric span { color:#b8c3b9; font-size:9px; text-transform:uppercase; }
+  .result-note { margin:10px 0 0; color:#b8c3b9; font-size:9px; line-height:1.4; }
+  #error { margin-top:10px; color:#a92828; font-size:11px; line-height:1.4; }
+  .legend { position:fixed; z-index:1; right:16px; bottom:16px; padding:10px 12px; border-radius:12px; background:rgba(250,249,244,.9); box-shadow:0 8px 25px rgba(25,42,29,.16); font-size:10px; }
+  .gradient { width:120px; height:5px; margin:5px 0; border-radius:99px; background:linear-gradient(90deg,#59636f,#f39c35,#d7193f); }
+  @media (max-width:680px) { #controls { top:auto; left:8px; right:8px; bottom:8px; width:auto; max-height:68vh; border-radius:18px; } .panel-scroll { padding:17px; } .legend { display:none; } }
+</style>
+</head>
+<body>
+<main id="controls" aria-label="Route planner"><div class="panel-scroll">
+  <div class="brand"><div><div class="eyebrow">Find the long way</div><h1>Backroad</h1></div><span class="beta">LOCAL BETA</span></div>
+  <p class="intro">Routes shaped around quiet roads, good curves, and fewer city interruptions.</p>
+  <label class="field" for="routeMode"><span class="field-head"><span class="field-title">Route style</span></span><select id="routeMode"><option value="explore">Explore an area, then come home</option><option value="loop">Freeform loop from home</option><option value="point_to_point">Drive to a destination</option></select></label>
+  <div id="modeHint"></div><div id="pinStatus" aria-live="polite"></div>
+  <label class="field" for="distance"><span class="field-head"><span class="field-title">Approximate distance</span><span class="field-value"><span id="distanceValue">60</span> mi</span></span><input id="distance" type="range" min="10" max="200" step="5" value="60"></label>
+  <div class="field"><div class="field-head"><span class="field-title">Backroad preferences</span></div>
+    <label class="safety-toggle"><input id="pavedOnly" type="checkbox" checked><span>Paved roads only<small>Hard-excludes roads OSM marks dirt, gravel, compacted, or unpaved. Unknown surfaces are disclosed after routing.</small></span></label>
+    <div class="preference"><div class="field-head"><span>Stay out of dense areas</span><span class="field-value" id="cityValue">Strong</span></div><input id="cityAvoidance" type="range" min="0" max="1" step="0.1" value="0.9"><small>Strongly penalizes roads with many nearby OSM stops and signals.</small></div>
+    <div class="preference"><div class="field-head"><span>Curvy roads</span><span class="field-value" id="curveValue">High</span></div><input id="curvinessWeight" type="range" min="0" max="1" step="0.1" value="0.8"></div>
+    <div class="preference"><div class="field-head"><span>Scenic surroundings</span><span class="field-value" id="sceneryValue">High</span></div><input id="sceneryWeight" type="range" min="0" max="1" step="0.1" value="0.8"><small>Prefers nearby water, forest, parks, natural land, countryside, and viewpoints.</small></div>
+    <div class="preference"><div class="field-head"><span>Low-interruption roads</span><span class="field-value" id="trafficValue">High</span></div><input id="trafficWeight" type="range" min="0" max="1" step="0.1" value="0.7"></div>
+  </div>
+  <div class="actions"><button id="generate">Build my route</button><button id="clearPins" aria-label="Clear map pins">Reset</button></div>
+  <div id="error" role="alert"></div><section id="result" aria-live="polite"></section>
+  <details><summary>Local server settings</summary><div class="advanced"><label>API base URL<input id="apiBase" type="text"></label><label>Loaded region<input id="region" type="text" value="minnesota"></label></div></details>
+</div></main>
+<div id="map" role="region" aria-label="Map"></div>
+<aside class="legend"><strong>Road character</strong><div class="gradient"></div><span>Relaxed&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Curvy</span></aside>
+<script>
+const map = new maplibregl.Map({ container:'map', style:'https://tiles.openfreemap.org/styles/liberty', center:[-93.2650,44.9778], zoom:10 });
+map.addControl(new maplibregl.NavigationControl({ showCompass:false }), 'top-right');
+let startPin=null, targetPin=null, startMarker=null, targetMarker=null;
+let activeRequest=null, progressTimer=null;
+const byId=id=>document.getElementById(id), mode=()=>byId('routeMode').value;
+byId('apiBase').value=location.protocol==='file:'?'http://localhost:8000':location.origin;
+const levelLabel=value=>value>=.85?'Strong':value>=.6?'High':value>=.35?'Medium':'Light';
+function showRoute(geojson) {
+  if(map.getSource('route')) map.getSource('route').setData(geojson); else map.addSource('route',{type:'geojson',data:geojson});
+  if(!map.getLayer('route-main')) map.addLayer({id:'route-main',type:'line',source:'route',filter:['!=',['get','is_connector'],true],layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':['interpolate',['linear'],['coalesce',['get','curviness_score'],0],0,'#59636f',50,'#f39c35',100,'#d7193f'],'line-width':5,'line-opacity':.92}});
+  if(!map.getLayer('route-connectors')) map.addLayer({id:'route-connectors',type:'line',source:'route',filter:['==',['get','is_connector'],true],layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':'#59636f','line-width':5,'line-opacity':.9,'line-dasharray':[2,2]}});
+}
+function updateModeUI(){
+  const hints={explore:'Click your start, then click the area you want to explore. The route returns to your start.',loop:'Click your start. We’ll find a backroad loop and bring you home.',point_to_point:'Click your start, then click your destination.'};
+  byId('modeHint').textContent=hints[mode()];
+  if(mode()==='loop'&&targetPin){targetMarker.remove();targetMarker=null;targetPin=null;} updatePinStatus();
+}
+function pinText(pin){return pin?`${pin.lat.toFixed(4)}, ${pin.lon.toFixed(4)}`:'Click the map to set';}
+function updatePinStatus(){
+  const needsTarget=mode()!=='loop', targetLabel=mode()==='explore'?'Explore near':'Destination';
+  byId('pinStatus').innerHTML=`<div class="pin-row ${startPin?'ready':''}"><span class="pin-dot"></span><strong>Start</strong><span>${pinText(startPin)}</span></div>${needsTarget?`<div class="pin-row target ${targetPin?'ready':''}"><span class="pin-dot"></span><strong>${targetLabel}</strong><span>${pinText(targetPin)}</span></div>`:''}`;
+}
+function setStart(lng,lat){if(startMarker)startMarker.remove();startPin={lon:lng,lat};startMarker=new maplibregl.Marker({color:'#315c3b'}).setLngLat([lng,lat]).addTo(map);}
+function setTarget(lng,lat){if(targetMarker)targetMarker.remove();targetPin={lon:lng,lat};targetMarker=new maplibregl.Marker({color:'#e87335'}).setLngLat([lng,lat]).addTo(map);}
+map.on('click',e=>{const{lng,lat}=e.lngLat;if(!startPin)setStart(lng,lat);else if(mode()==='loop')setStart(lng,lat);else setTarget(lng,lat);updatePinStatus();});
+byId('routeMode').addEventListener('change',updateModeUI);
+byId('distance').addEventListener('input',e=>byId('distanceValue').textContent=e.target.value);
+for(const[input,output]of[['cityAvoidance','cityValue'],['curvinessWeight','curveValue'],['sceneryWeight','sceneryValue'],['trafficWeight','trafficValue']])byId(input).addEventListener('input',e=>byId(output).textContent=levelLabel(Number(e.target.value)));
+byId('clearPins').addEventListener('click',()=>{if(activeRequest)activeRequest.abort();if(startMarker)startMarker.remove();if(targetMarker)targetMarker.remove();startPin=targetPin=startMarker=targetMarker=null;if(map.getSource('route'))map.getSource('route').setData({type:'FeatureCollection',features:[]});byId('result').classList.remove('visible');byId('error').textContent='';updatePinStatus();});
+byId('generate').addEventListener('click',async()=>{
+  const button=byId('generate'),error=byId('error'),result=byId('result');error.textContent='';result.classList.remove('visible');
+  if(!startPin){error.textContent='Set your start point on the map first.';return;} if(mode()!=='loop'&&!targetPin){error.textContent=`Set an ${mode()==='explore'?'exploration area':'destination'} on the map.`;return;}
+  const body={region:byId('region').value.trim(),start_lat:startPin.lat,start_lon:startPin.lon,target_distance_mi:Number(byId('distance').value),curviness_weight:Number(byId('curvinessWeight').value),scenery_weight:Number(byId('sceneryWeight').value),traffic_weight:Number(byId('trafficWeight').value),city_avoidance:Number(byId('cityAvoidance').value),paved_only:byId('pavedOnly').checked};
+  if(mode()==='explore'){body.focus_lat=targetPin.lat;body.focus_lon=targetPin.lon;} if(mode()==='point_to_point'){body.dest_lat=targetPin.lat;body.dest_lon=targetPin.lon;}
+  activeRequest=new AbortController();let elapsed=0;button.disabled=true;button.textContent='Finding nearby roads…';
+  progressTimer=setInterval(()=>{elapsed+=1;button.textContent=elapsed<8?`Finding nearby roads… ${elapsed}s`:elapsed<18?`Scoring backroads… ${elapsed}s`:`Shaping the loop… ${elapsed}s`;},1000);
+  try{
+    const base=byId('apiBase').value.trim().replace(/\/$/,'');const response=await fetch(`${base}/generate-route`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:activeRequest.signal});const data=await response.json();if(!response.ok)throw new Error(data.detail||'No route could be built with these settings.');
+    const routeName=data.route_kind==='exploration_loop'?'Exploration loop':data.route_kind==='point_to_point'?'Backroad drive':'Backroad loop';
+    const sceneryText=data.scenery_signals?.length?` Nearby: ${data.scenery_signals.join(', ')}.`:'';
+    result.innerHTML=`<div class="result-kicker">${routeName} ready</div><div class="result-grid"><div class="metric"><strong>${data.total_length_mi}</strong><span>Miles</span></div><div class="metric"><strong>${data.curviness_score??'—'}</strong><span>Curves</span></div><div class="metric"><strong>${data.scenery_score??'—'}</strong><span>Scenery</span></div></div><p class="result-note">${data.estimated_time_min} min estimated. ${data.surface_notice} ${data.score_basis}${sceneryText}</p>`;
+    result.classList.add('visible');showRoute(data.geojson);const coords=data.geojson.features.flatMap(feature=>feature.geometry.coordinates);
+    if(coords.length){const bounds=coords.reduce((b,coordinate)=>b.extend(coordinate),new maplibregl.LngLatBounds(coords[0],coords[0]));map.fitBounds(bounds,{padding:{top:55,right:55,bottom:55,left:window.innerWidth>680?410:55}});}
+  }catch(requestError){if(requestError.name!=='AbortError')error.textContent=requestError.message;}finally{clearInterval(progressTimer);progressTimer=null;activeRequest=null;button.disabled=false;button.textContent='Build my route';}
+});
+updateModeUI();
+</script>
+</body>
+</html>

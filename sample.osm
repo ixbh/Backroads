@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+  <node id="1" lat="44.9" lon="-93.3"/>
+  <node id="2" lat="44.91" lon="-93.29"/>
+  <node id="3" lat="44.92" lon="-93.28"/>
+  <node id="4" lat="44.93" lon="-93.30"><tag k="highway" v="traffic_signals"/></node>
+  <node id="5" lat="44.80" lon="-93.10"/>
+  <node id="6" lat="44.81" lon="-93.11"/>
+  <way id="100">
+    <nd ref="1"/>
+    <nd ref="2"/>
+    <nd ref="3"/>
+    <nd ref="4"/>
+    <tag k="highway" v="secondary"/>
+    <tag k="name" v="Test Curvy Road"/>
+    <tag k="surface" v="asphalt"/>
+  </way>
+  <way id="101">
+    <nd ref="5"/>
+    <nd ref="6"/>
+    <tag k="highway" v="footway"/>
+  </way>
+  <way id="102">
+    <nd ref="5"/>
+    <nd ref="6"/>
+    <tag k="highway" v="track"/>
+    <tag k="tracktype" v="grade5"/>
+  </way>
+</osm>

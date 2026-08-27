@@ -1,0 +1,10 @@
+{
+  "name": "Backroad Scenic Route Planner",
+  "short_name": "Backroad",
+  "description": "Find paved, scenic backroad drives shaped around curves and quiet surroundings.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f7f6f1",
+  "theme_color": "#315c3b"
+}
