@@ -210,7 +210,12 @@ def build_network(
     # Direction matters: OSM one-way restrictions are safety constraints, not
     # preferences. Bidirectional roads are represented by one edge each way.
     full = nx.MultiDiGraph()
-    scenic = nx.MultiDiGraph()
+    # Keep one canonical graph instead of duplicating every scenic node, edge,
+    # attribute dictionary, and RouteSegment into a second MultiDiGraph.  The
+    # scenic graph becomes an edge-induced view after construction.  This is
+    # materially faster and smaller on low-CPU hosted instances while
+    # preserving the exact same pathfinding topology and weights.
+    scenic_edges = []
     curviness_weight = weights.get("curviness", 0.5)
     traffic_weight = weights.get("traffic", 0.5)
     city_avoidance = weights.get("city_avoidance", 0.75)
@@ -323,18 +328,23 @@ def build_network(
             full.add_node(v, lon=b[0], lat=b[1])
             full_cost = piece_cost if scenic_eligible else piece_cost * FALLBACK_PENALTY
             if oneway_direction >= 0:
-                full.add_edge(u, v, length_m=piece_length, cost=full_cost, urban_density=density_norm, segment=segment)
+                edge_key = full.add_edge(
+                    u, v, length_m=piece_length, cost=full_cost,
+                    urban_density=density_norm, segment=segment, reversed=False,
+                )
+                if scenic_eligible:
+                    scenic_edges.append((u, v, edge_key))
             if oneway_direction <= 0:
-                reverse = _reversed_segment(segment)
-                full.add_edge(v, u, length_m=piece_length, cost=full_cost, urban_density=density_norm, segment=reverse)
+                edge_key = full.add_edge(
+                    v, u, length_m=piece_length, cost=full_cost,
+                    urban_density=density_norm, segment=segment, reversed=True,
+                )
+                if scenic_eligible:
+                    scenic_edges.append((v, u, edge_key))
 
-            if scenic_eligible:
-                scenic.add_node(u, lon=a[0], lat=a[1])
-                scenic.add_node(v, lon=b[0], lat=b[1])
-                if oneway_direction >= 0:
-                    scenic.add_edge(u, v, cost=piece_cost, length_m=piece_length, urban_density=density_norm, segment=segment)
-                if oneway_direction <= 0:
-                    scenic.add_edge(v, u, cost=piece_cost, length_m=piece_length, urban_density=density_norm, segment=_reversed_segment(segment))
+    # edge_subgraph is a read-only view backed by `full`: it contains only
+    # nodes incident to scenic-eligible edges and does not copy graph data.
+    scenic = full.edge_subgraph(scenic_edges)
 
     logger.info(
         "Network built: %d full nodes / %d full edges; %d scenic-only nodes / %d scenic-only edges.",
@@ -372,7 +382,10 @@ def _edges_to_segments(graph, path, weight_key: str, seen_edges: set, is_connect
         # with the path actually selected by NetworkX.
         parallel_edges = graph[u][v]
         best_key = min(parallel_edges, key=lambda k: parallel_edges[k][weight_key])
-        seg = parallel_edges[best_key]["segment"]
+        edge_data = parallel_edges[best_key]
+        seg = edge_data["segment"]
+        if edge_data.get("reversed", False):
+            seg = _reversed_segment(seg)
         flag = True if is_connector else (not seg.scenic_eligible)
         if flag:
             # Don't mutate the shared segment object (it may also appear via

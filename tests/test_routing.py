@@ -79,6 +79,33 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(network.scenic[("osm", 1)][("osm", 3)][0]["segment"].coords,
                          [(0.0, 0.0), (0.5, 0.2), (1.0, 0.0)])
 
+    def test_scenic_graph_is_a_filtered_view_of_the_full_graph(self):
+        rows = [
+            (1, "Scenic", "secondary", 100.0, True, 0, "asphalt", None, [1, 2],
+             wkb.dumps(LineString([(0, 0), (1, 0)])), 50, 1.0, None, None),
+            (2, "Connector", "residential", 100.0, False, 0, "asphalt", None, [3, 4],
+             wkb.dumps(LineString([(0, 1), (1, 1)])), 0, 1.0, None, None),
+        ]
+        class Cursor:
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def execute(self, *_): pass
+            def fetchall(self): return rows
+        class Connection:
+            def cursor(self): return Cursor()
+
+        network = build_network(Connection(), "test", 0, 0, 1000, {})
+        scenic_u, scenic_v = ("osm", 1), ("osm", 2)
+        connector_u, connector_v = ("osm", 3), ("osm", 4)
+
+        self.assertTrue(network.scenic.has_edge(scenic_u, scenic_v))
+        self.assertFalse(network.scenic.has_edge(connector_u, connector_v))
+        self.assertNotIn(connector_u, network.scenic)
+        self.assertIs(
+            network.scenic[scenic_u][scenic_v][0]["segment"],
+            network.full[scenic_u][scenic_v][0]["segment"],
+        )
+
     def test_city_avoidance_strongly_penalizes_high_conflict_roads(self):
         rows = [
             (1, "Quiet", "secondary", 100.0, True, 0, "asphalt", None, [1, 2],
@@ -179,6 +206,10 @@ class RoutingTests(unittest.TestCase):
         network = build_network(Connection(), "test", 0, 0, 1000, {})
         self.assertTrue(network.scenic.has_edge(("osm", 2), ("osm", 1)))
         self.assertFalse(network.scenic.has_edge(("osm", 1), ("osm", 2)))
+        segments = _edges_to_segments(
+            network.scenic, [("osm", 2), ("osm", 1)], "cost", set(), False
+        )
+        self.assertEqual(segments[0].coords, [(1.0, 0.0), (0.0, 0.0)])
 
     def test_segment_geometry_follows_directed_path(self):
         graph = nx.MultiDiGraph()
