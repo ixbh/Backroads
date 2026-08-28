@@ -15,6 +15,7 @@ drivers. Internally everything still runs in meters.
 
 from __future__ import annotations
 
+import gc
 import os
 import threading
 import time
@@ -43,6 +44,7 @@ MILES_TO_METERS = 1609.344
 NETWORK_CACHE_TTL_SECONDS = 300
 _network_cache: tuple[tuple, float, object] | None = None
 _network_cache_lock = threading.Lock()
+_route_generation_lock = threading.Lock()
 
 app = FastAPI(title="Scenic Route Generator API")
 
@@ -81,6 +83,14 @@ def _get_network(region, center_lon, center_lat, radius_m, weights):
     with _network_cache_lock:
         if _network_cache and _network_cache[0] == key and now - _network_cache[1] < NETWORK_CACHE_TTL_SECONDS:
             return _network_cache[2]
+
+        # A preference or search-area change needs a differently weighted
+        # graph. Drop the previous graph *before* constructing its replacement
+        # so a 512 MB hosted instance never holds two metro-sized NetworkX
+        # graphs at once. Completed requests own no other reference because
+        # route generation is serialized below.
+        _network_cache = None
+        gc.collect()
 
         conn = get_connection()
         try:
@@ -261,8 +271,7 @@ def web_manifest():
     )
 
 
-@app.post("/generate-route", response_model=RouteResponse)
-def generate_route(req: RouteRequest):
+def _generate_route(req: RouteRequest):
     if (req.dest_lat is None) != (req.dest_lon is None):
         raise HTTPException(422, "dest_lat and dest_lon must be provided together.")
     if (req.focus_lat is None) != (req.focus_lon is None):
@@ -416,3 +425,21 @@ def generate_route(req: RouteRequest):
         ],
         geojson=route.to_geojson(),
     )
+
+
+@app.post("/generate-route", response_model=RouteResponse)
+def generate_route(req: RouteRequest):
+    # Sync FastAPI handlers can otherwise run concurrently in its threadpool.
+    # A browser refresh does not cancel Python graph work already underway, so
+    # overlapping builds can exceed Render Free's 512 MB memory limit. Reject
+    # the overlap with an explainable retry response instead of crashing the
+    # whole service and losing the in-memory cache.
+    if not _route_generation_lock.acquire(blocking=False):
+        raise HTTPException(
+            429,
+            "Another route is still being generated. Wait for it to finish, then try again.",
+        )
+    try:
+        return _generate_route(req)
+    finally:
+        _route_generation_lock.release()

@@ -31,7 +31,7 @@ import logging
 import math
 import random
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import networkx as nx
 import psycopg2
@@ -83,7 +83,7 @@ KNOWN_UNPAVED_SURFACES = {
 MAX_LEG_STRETCH = 1.4
 
 
-@dataclass
+@dataclass(slots=True)
 class RouteSegment:
     road_id: int
     name: str | None
@@ -101,7 +101,7 @@ class RouteSegment:
 
 def _reversed_segment(segment: RouteSegment) -> RouteSegment:
     """Return a traversal-safe copy of a segment in the opposite direction."""
-    return RouteSegment(**{**segment.__dict__, "coords": list(reversed(segment.coords))})
+    return replace(segment, coords=list(reversed(segment.coords)))
 
 
 @dataclass
@@ -240,6 +240,9 @@ def build_network(
             keys = [_node_key(*coord) for coord in coords]
         node_counts.update(keys)
         parsed_rows.append((*row[:8], coords, keys, *row[10:]))
+    # The parsed representation now owns everything graph construction needs.
+    # Do not retain the original DB result tuples and WKB buffers alongside it.
+    del rows
 
     # Count actual routing nodes per small grid cell. Dense metro grids have
     # many more endpoints/intersections than rural roads or small towns. Use
@@ -258,15 +261,21 @@ def build_network(
         (math.floor(lon / ROAD_DENSITY_CELL_DEG), math.floor(lat / ROAD_DENSITY_CELL_DEG))
         for _, (lon, lat) in routing_node_keys
     )
+    del routing_node_keys
     density_values = sorted(density_cells.values())
     if density_values:
         density_low = max(20, density_values[int((len(density_values) - 1) * 0.75)])
         density_high = max(density_low + 20, density_values[int((len(density_values) - 1) * 0.97)])
     else:
         density_low, density_high = 20, 40
+    del density_values
     logger.info("Road-density city proxy: quiet <= %d nodes/cell; dense >= %d.", density_low, density_high)
 
-    for road_id, name, highway, length_m, scenic_eligible, oneway_direction, surface, tracktype, coords, keys, curviness_score, urban_penalty, scenery_score, scenery_signals in parsed_rows:
+    # Clear each parsed row as it is consumed. This keeps temporary geometry
+    # and node-id arrays from overlapping the complete finished graph at peak.
+    for row_index in range(len(parsed_rows)):
+        road_id, name, highway, length_m, scenic_eligible, oneway_direction, surface, tracktype, coords, keys, curviness_score, urban_penalty, scenery_score, scenery_signals = parsed_rows[row_index]
+        parsed_rows[row_index] = None
         curviness_norm = (curviness_score or 0) / 100.0
         conflict_norm = urban_penalty if urban_penalty is not None else 1.0
         scenery_norm = (scenery_score or 0) / 100.0
@@ -345,6 +354,7 @@ def build_network(
     # edge_subgraph is a read-only view backed by `full`: it contains only
     # nodes incident to scenic-eligible edges and does not copy graph data.
     scenic = full.edge_subgraph(scenic_edges)
+    del scenic_edges, parsed_rows, node_counts, density_cells
 
     logger.info(
         "Network built: %d full nodes / %d full edges; %d scenic-only nodes / %d scenic-only edges.",
@@ -390,7 +400,7 @@ def _edges_to_segments(graph, path, weight_key: str, seen_edges: set, is_connect
         if flag:
             # Don't mutate the shared segment object (it may also appear via
             # a different graph view) -- copy it with the flag set.
-            seg = RouteSegment(**{**seg.__dict__, "is_connector": True})
+            seg = replace(seg, is_connector=True)
         segments.append(seg)
     return segments
 
