@@ -1,0 +1,19 @@
+BACKROAD BETA DATA NOTICE
+=========================
+
+The included road geometry, road tags, and scenery signals are derived from
+OpenStreetMap data.
+
+© OpenStreetMap contributors
+https://www.openstreetmap.org/copyright
+
+OpenStreetMap data is available under the Open Data Commons Open Database
+License (ODbL) 1.0:
+https://opendatacommons.org/licenses/odbl/1-0/
+
+The generated backroads.sqlite3 routing database is distributed under ODbL
+1.0. The database-building source is export_desktop_data.py in the Backroads
+source repository.
+
+The OpenFreeMap basemap is loaded over the internet and carries its own
+on-map attribution in the route planner.

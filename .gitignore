@@ -4,3 +4,10 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 *.osm.pbf
+data/*.sqlite3
+data/*.building
+build/
+dist/
+release/
+.desktop-build-venv/
+*.zip

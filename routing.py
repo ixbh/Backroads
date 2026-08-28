@@ -34,7 +34,6 @@ from collections import Counter
 from dataclasses import dataclass, field, replace
 
 import networkx as nx
-import psycopg2
 from shapely import wkb as shapely_wkb
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -184,26 +183,31 @@ def build_network(
     lat_buffer_deg = radius_m / 111_320.0
     lon_buffer_deg = radius_m / (111_320.0 * math.cos(math.radians(center_lat)))
 
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT r.id, r.name, r.highway, r.length_m, r.scenic_eligible,
-                   r.oneway_direction, r.surface, r.tracktype, r.node_ids,
-                   ST_AsBinary(r.geom) AS geom_wkb,
-                   rs.curviness_score, rs.urban_conflict_penalty,
-                   rs.scenery_score, rs.scenery_signals
-            FROM roads r
-            LEFT JOIN road_scores rs ON rs.road_id = r.id
-            WHERE r.region = %s
-              AND r.geom && ST_MakeEnvelope(%s, %s, %s, %s, 4326)
-            """,
-            (
-                region,
-                center_lon - lon_buffer_deg, center_lat - lat_buffer_deg,
-                center_lon + lon_buffer_deg, center_lat + lat_buffer_deg,
-            ),
-        )
-        rows = cur.fetchall()
+    bounds = (
+        center_lon - lon_buffer_deg, center_lat - lat_buffer_deg,
+        center_lon + lon_buffer_deg, center_lat + lat_buffer_deg,
+    )
+    if hasattr(conn, "fetch_candidate_roads"):
+        rows = conn.fetch_candidate_roads(region, *bounds)
+    else:
+        # Compatibility path for PostgreSQL connections and the lightweight
+        # cursor fakes used by focused routing tests.
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT r.id, r.name, r.highway, r.length_m, r.scenic_eligible,
+                       r.oneway_direction, r.surface, r.tracktype, r.node_ids,
+                       ST_AsBinary(r.geom) AS geom_wkb,
+                       rs.curviness_score, rs.urban_conflict_penalty,
+                       rs.scenery_score, rs.scenery_signals
+                FROM roads r
+                LEFT JOIN road_scores rs ON rs.road_id = r.id
+                WHERE r.region = %s
+                  AND r.geom && ST_MakeEnvelope(%s, %s, %s, %s, 4326)
+                """,
+                (region, *bounds),
+            )
+            rows = cur.fetchall()
 
     logger.info("Loaded %d candidate roads within ~%.0fm of center.", len(rows), radius_m)
 

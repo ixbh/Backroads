@@ -9,6 +9,7 @@ An early local-first route-planning prototype built from OpenStreetMap data. It 
 - `load_scenic_features.py` and `scenery.py`: import explicit OSM landscape features and assign explainable water, forest, protected-land, countryside, natural-land, and viewpoint scores.
 - `routing.py`: builds directed NetworkX graphs from exact OSM node identities, preserves forward and reverse one-way restrictions, filters known unpaved surfaces, keeps residential roads out of the preferred graph, combines stop/signal density with local road-network density for city avoidance, and uses residential streets only as penalized/connector fallbacks.
 - `api.py`: FastAPI adapter for route generation and response summaries, with a bounded five-minute cache for the most recent expensive graph build.
+- `road_store.py`: runtime provider boundary that keeps PostgreSQL/PostGIS and the read-only desktop SQLite snapshot interchangeable.
 - `viewer.html`: MapLibre/OpenFreeMap click-to-pin client.
 
 The route score combines length-weighted curviness with OSM scenery evidence. Dense-area avoidance combines nearby OSM stop/signal density with a local road-network-density proxy; it is not census population or live traffic. ETA uses documented road-class speed assumptions. These values are not navigation-grade.
@@ -24,6 +25,29 @@ The route score combines length-weighted curviness with OSM scenery evidence. De
 
 See `DEPLOYMENT.md` for the hosted beta architecture and iPhone/navigation roadmap.
 
+## Windows desktop beta
+
+The desktop beta keeps route calculation on the tester's Windows PC and does
+not require Python, PostgreSQL, Docker, or a Render account. PostgreSQL remains
+the source of truth; `export_desktop_data.py` creates a separate read-only
+SQLite/RTree snapshot containing only runtime roads and precomputed scores.
+
+Build flow:
+
+```powershell
+python export_desktop_data.py --region minnesota --output data/backroads.sqlite3
+python -m pip install -r requirements-desktop.txt
+python -m PyInstaller --noconfirm --clean BackroadBeta.spec
+Compress-Archive -Path 'dist\Backroad Beta' -DestinationPath 'release\Backroad-Beta-Windows.zip'
+```
+
+The distributable is the complete `Backroad Beta` folder or its zip, not the
+executable by itself. `Backroad Beta.exe` starts a loopback-only API, opens the
+existing browser UI, and stops when the tester presses Enter in its small
+console window. The basemap still requires internet access. See
+`BETA_README.txt` and `DATA_LICENSE.txt` for tester and
+OpenStreetMap data-distribution notices.
+
 Opening the viewer as a plain `file://` URL may be restricted by browser security policies. The map style and tiles require internet access; routing itself uses the local database.
 
 ## Tests
@@ -36,8 +60,9 @@ The focused tests use synthetic networks and do not require PostgreSQL.
 
 ## Environment and external services
 
-- `DATABASE_URL` — required by import, scoring, and route-generation API calls; never expose it to the browser.
-- PostgreSQL + PostGIS — required.
+- `DATABASE_URL` — required by import/scoring and the normal route API; never expose it to the browser.
+- `BACKROADS_SQLITE_PATH` — optional route-API alternative pointing at a generated, read-only desktop snapshot.
+- PostgreSQL + PostGIS — required for importing, scoring, exporting, and normal development; not required on a tester's desktop.
 - OpenFreeMap — public basemap style/tiles used by `viewer.html`; no API key.
 - Geofabrik — optional source for downloading regional OSM PBF extracts.
 

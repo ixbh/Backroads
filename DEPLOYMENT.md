@@ -59,3 +59,22 @@ The safest architecture is to keep this project's explainable scenic scorer as
 the route-selection layer, but delegate legal turn-by-turn paths and maneuvers
 to a mature routing engine such as Valhalla, GraphHopper, or OSRM rather than
 trying to turn the current NetworkX prototype into the entire navigation stack.
+
+## Windows desktop beta
+
+`BackroadBeta.spec` packages the same API and viewer into a portable Windows
+folder. `export_desktop_data.py` exports only runtime road geometry and
+precomputed scores to an immutable SQLite database with an RTree bounding-box
+index. This shifts NetworkX graph construction onto each tester's computer and
+avoids hosted free-tier CPU and RAM limits without altering the PostgreSQL
+source database.
+
+The portable folder must be distributed as a whole because the routing data is
+intentionally external to the executable. A one-file executable would extract
+the large database into a temporary directory on every launch. The portable
+zip can later be wrapped in an installer without changing the runtime layout.
+
+The desktop beta is Windows-only and is not a substitute for the hosted iPhone
+test. It still requires internet access for OpenFreeMap tiles. Distribution
+must retain `DATA_LICENSE.txt`, the in-map attribution, and the ODbL terms for
+the included OpenStreetMap-derived database.

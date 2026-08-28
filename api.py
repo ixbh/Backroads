@@ -21,13 +21,13 @@ import threading
 import time
 from pathlib import Path
 
-import psycopg2
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from road_store import RoadStoreConfigurationError, open_road_source
 from routing import (
     build_network,
     generate_exploration_loop,
@@ -64,10 +64,10 @@ app.add_middleware(
 
 
 def get_connection():
-    database_url = os.environ.get("DATABASE_URL")
-    if not database_url:
-        raise HTTPException(500, "DATABASE_URL is not set on the server.")
-    return psycopg2.connect(database_url)
+    try:
+        return open_road_source()
+    except RoadStoreConfigurationError as error:
+        raise HTTPException(500, str(error)) from error
 
 
 def _get_network(region, center_lon, center_lat, radius_m, weights):
