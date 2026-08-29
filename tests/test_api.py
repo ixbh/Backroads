@@ -6,6 +6,7 @@ from unittest.mock import patch
 from fastapi import HTTPException
 
 import api
+from geocoding import GeocodingResult
 
 
 class _Connection:
@@ -64,6 +65,19 @@ class ApiMemorySafetyTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.status_code, 429)
         self.assertIn("still being generated", raised.exception.detail)
+
+    def test_geocode_endpoint_returns_provider_results(self):
+        result = GeocodingResult(
+            "123 Main Street, Cottage Grove, Minnesota", 44.8277, -92.9438,
+            "place", "house",
+        )
+        with patch.object(api._geocoder, "search", return_value=[result]) as search:
+            response = api.geocode_address("123 Main Street", 44.8, -93.1)
+
+        self.assertEqual(response, [result])
+        search.assert_called_once_with(
+            "123 Main Street", near_lat=44.8, near_lon=-93.1,
+        )
 
 
 if __name__ == "__main__":

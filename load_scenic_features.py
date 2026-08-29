@@ -2,7 +2,8 @@
 
 This is intentionally provider-independent and free of API keys. It imports
 only signals we can name in the UI: water, forest, parks/protected land,
-countryside land use, other natural land, and viewpoints.
+countryside land use, other natural land, viewpoints, tourist attractions,
+and monuments.
 """
 
 from __future__ import annotations
@@ -26,6 +27,10 @@ BATCH_SIZE = 2000
 def category_for(tags) -> str | None:
     if tags.get("tourism") == "viewpoint":
         return "viewpoint"
+    if tags.get("historic") in {"monument", "memorial", "castle", "ruins"}:
+        return "monument"
+    if tags.get("tourism") == "attraction":
+        return "attraction"
     if (
         tags.get("natural") in {"water", "bay", "coastline"}
         or tags.get("waterway") in {"river", "canal"}
@@ -36,7 +41,7 @@ def category_for(tags) -> str | None:
         return "forest"
     if (
         tags.get("leisure") == "nature_reserve"
-        or tags.get("boundary") == "protected_area"
+        or tags.get("boundary") in {"protected_area", "national_park"}
     ):
         return "park"
     if tags.get("landuse") in {"farmland", "meadow", "orchard", "vineyard"}:
@@ -85,7 +90,7 @@ class ScenicFeatureHandler(osmium.SimpleHandler):
 
     def node(self, node):
         category = category_for(node.tags)
-        if category != "viewpoint":
+        if category not in {"viewpoint", "attraction", "monument"}:
             return
         try:
             self._add(node.id, "n", category, node.tags.get("name"), self.factory.create_point(node))

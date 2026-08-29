@@ -43,6 +43,10 @@ rebuild than the app container.
 - Add monitoring, database backups, a privacy policy, and a way to report a
   dangerous or incorrectly tagged road.
 - Pin and review basemap/tile-provider usage terms and capacity.
+- The built-in Nominatim adapter is intentionally limited to explicit searches,
+  one request per second, and a bounded cache. Before a larger/public beta,
+  configure `GEOCODER_BASE_URL` for a provider whose capacity and terms match
+  the expected traffic.
 
 ## iPhone scope
 

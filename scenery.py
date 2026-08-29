@@ -24,6 +24,10 @@ SIGNAL_WEIGHTS = {
     "countryside": 12,
     "natural": 18,
     "viewpoint": 15,
+    # Kept separate from the foliage/landscape score. These signals power the
+    # optional sightseeing mode without redefining what the scenery slider means.
+    "attraction": 0,
+    "monument": 0,
 }
 
 
@@ -40,7 +44,9 @@ WITH signals AS (
            bool_or(f.category = 'park'       AND ST_DWithin(r.geom, f.geom, 0.00625)) AS park,
            bool_or(f.category = 'countryside' AND ST_DWithin(r.geom, f.geom, 0.00313)) AS countryside,
            bool_or(f.category = 'natural'    AND ST_DWithin(r.geom, f.geom, 0.00625)) AS natural_land,
-           bool_or(f.category = 'viewpoint'  AND ST_DWithin(r.geom, f.geom, 0.01875)) AS viewpoint
+           bool_or(f.category = 'viewpoint'  AND ST_DWithin(r.geom, f.geom, 0.01875)) AS viewpoint,
+           bool_or(f.category = 'attraction' AND ST_DWithin(r.geom, f.geom, 0.01875)) AS attraction,
+           bool_or(f.category = 'monument'   AND ST_DWithin(r.geom, f.geom, 0.01875)) AS monument
     FROM roads r
     LEFT JOIN scenic_features f
       ON f.region = r.region
@@ -49,6 +55,7 @@ WITH signals AS (
     GROUP BY r.id
 ), scored AS (
     SELECT road_id, water, forest, park, countryside, natural_land, viewpoint,
+           attraction, monument,
            LEAST(100,
                CASE WHEN water       THEN 30 ELSE 0 END +
                CASE WHEN forest      THEN 25 ELSE 0 END +
@@ -67,7 +74,9 @@ SELECT road_id, score, score,
            'park',        CASE WHEN park        THEN true END,
            'countryside', CASE WHEN countryside THEN true END,
            'natural',     CASE WHEN natural_land THEN true END,
-           'viewpoint',   CASE WHEN viewpoint   THEN true END
+           'viewpoint',   CASE WHEN viewpoint   THEN true END,
+           'attraction',  CASE WHEN attraction  THEN true END,
+           'monument',    CASE WHEN monument    THEN true END
        )), now()
 FROM scored
 ON CONFLICT (road_id) DO UPDATE SET

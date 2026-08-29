@@ -65,7 +65,8 @@ CREATE TABLE IF NOT EXISTS scenic_features (
     osm_id      BIGINT NOT NULL,
     osm_type    CHAR(1) NOT NULL, -- 'n' node | 'w' way
     category    TEXT NOT NULL CHECK (category IN (
-                    'water', 'forest', 'park', 'countryside', 'natural', 'viewpoint'
+                    'water', 'forest', 'park', 'countryside', 'natural', 'viewpoint',
+                    'attraction', 'monument'
                 )),
     name        TEXT,
     geom        GEOMETRY(Geometry, 4326) NOT NULL,

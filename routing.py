@@ -80,6 +80,11 @@ KNOWN_UNPAVED_SURFACES = {
 # a local drive into a cross-region excursion. If the fun-cost path exceeds
 # this multiple of the distance-shortest path, use the shorter path.
 MAX_LEG_STRETCH = 1.4
+# Preference-aware waypoints already pull the loop toward interesting roads.
+# Keep each leg's additional path detour modest so a 95-mile request does not
+# quietly become a 130-mile drive just because the curve slider is high.
+MAX_PREFERENCE_STRETCH_BONUS = 0.15
+LANDMARK_SIGNALS = {"park", "viewpoint", "attraction", "monument"}
 
 
 @dataclass(slots=True)
@@ -224,6 +229,7 @@ def build_network(
     traffic_weight = weights.get("traffic", 0.5)
     city_avoidance = weights.get("city_avoidance", 0.75)
     scenery_weight = weights.get("scenery", 0.5)
+    landmark_weight = weights.get("landmarks", 0.0)
     paved_only = weights.get("paved_only", True)
 
     # Count exact OSM node identities first. Coordinate matching is retained
@@ -283,13 +289,25 @@ def build_network(
         curviness_norm = (curviness_score or 0) / 100.0
         conflict_norm = urban_penalty if urban_penalty is not None else 1.0
         scenery_norm = (scenery_score or 0) / 100.0
+        landmark_norm = max(
+            (
+                1.0 if scenery_signals.get("attraction") or scenery_signals.get("monument")
+                else 0.85 if scenery_signals.get("viewpoint")
+                else 0.65 if scenery_signals.get("park")
+                else 0.0
+            ) if scenery_signals else 0.0,
+            0.0,
+        )
         effective_scenery_weight = scenery_weight if scenery_score is not None else 0.0
         desirability = (
             curviness_norm * curviness_weight
             + conflict_norm * traffic_weight
             + scenery_norm * effective_scenery_weight
+            + landmark_norm * landmark_weight
         )
-        max_possible = curviness_weight + traffic_weight + effective_scenery_weight
+        max_possible = (
+            curviness_weight + traffic_weight + effective_scenery_weight + landmark_weight
+        )
         discount = MAX_DISCOUNT * (desirability / max_possible) if max_possible > 0 else 0.0
         urban_cost_multiplier = 1.0 + (
             city_avoidance * (1.0 - conflict_norm) * CITY_CONFLICT_MAX_PENALTY
@@ -343,14 +361,16 @@ def build_network(
             if oneway_direction >= 0:
                 edge_key = full.add_edge(
                     u, v, length_m=piece_length, cost=full_cost,
-                    urban_density=density_norm, segment=segment, reversed=False,
+                    urban_density=density_norm, landmark_score=landmark_norm,
+                    segment=segment, reversed=False,
                 )
                 if scenic_eligible:
                     scenic_edges.append((u, v, edge_key))
             if oneway_direction <= 0:
                 edge_key = full.add_edge(
                     v, u, length_m=piece_length, cost=full_cost,
-                    urban_density=density_norm, segment=segment, reversed=True,
+                    urban_density=density_norm, landmark_score=landmark_norm,
+                    segment=segment, reversed=True,
                 )
                 if scenic_eligible:
                     scenic_edges.append((v, u, edge_key))
@@ -377,6 +397,97 @@ def _nearest_node(graph, lon: float, lat: float, candidates: set | None = None):
         if d < best_dist:
             best, best_dist = n, d
     return best
+
+
+def _safe_waypoint_nodes(graph, candidates: set | None = None) -> set:
+    """Return intersections that are unlikely to terminate on a road spur.
+
+    Route geometry only creates graph nodes at road endpoints and real OSM
+    intersections. Requiring at least two distinct neighbours removes the
+    cul-de-sac/end-of-road anchors responsible for most out-and-back hairs.
+    """
+    pool = candidates if candidates is not None else graph.nodes
+    safe = set()
+    for node in pool:
+        if node not in graph:
+            continue
+        neighbours = set(graph.successors(node))
+        neighbours.update(graph.predecessors(node))
+        if len(neighbours) >= 2 and graph.out_degree(node) and graph.in_degree(node):
+            safe.add(node)
+    return safe or set(pool)
+
+
+def _node_preference_quality(graph, node, weights: dict) -> float:
+    edge_values = []
+    for *_edge, data in graph.out_edges(node, data=True):
+        segment = data["segment"]
+        landmark = data.get("landmark_score", 0.0)
+        positive = (
+            ((segment.curviness_score or 0) / 100.0) * weights.get("curviness", 0.0)
+            + ((segment.scenery_score or 0) / 100.0) * weights.get("scenery", 0.0)
+            + landmark * weights.get("landmarks", 0.0)
+            + (1.0 - data.get("urban_density", 0.0)) * weights.get("city_avoidance", 0.0)
+        )
+        scale = (
+            weights.get("curviness", 0.0) + weights.get("scenery", 0.0)
+            + weights.get("landmarks", 0.0) + weights.get("city_avoidance", 0.0)
+        )
+        edge_values.append(positive / scale if scale else 0.0)
+    return max(edge_values, default=0.0)
+
+
+def _nearest_preferred_node(
+    graph, lon: float, lat: float, *, candidates: set | None = None,
+    weights: dict | None = None, preference_reach_m: float = 2500.0,
+):
+    """Snap near a geometric target while favouring genuinely desirable roads."""
+    pool = candidates if candidates is not None else graph.nodes
+    nearest, nearest_m = None, float("inf")
+    cos_lat = math.cos(math.radians(lat))
+    for node in pool:
+        data = graph.nodes[node]
+        distance_m = math.hypot(
+            (data["lon"] - lon) * 111_320.0 * cos_lat,
+            (data["lat"] - lat) * 111_320.0,
+        )
+        if distance_m < nearest_m:
+            nearest, nearest_m = node, distance_m
+    if nearest is None or not weights:
+        return nearest
+
+    best, best_objective = nearest, nearest_m
+    max_snap_m = nearest_m + max(800.0, preference_reach_m)
+    for node in pool:
+        data = graph.nodes[node]
+        distance_m = math.hypot(
+            (data["lon"] - lon) * 111_320.0 * cos_lat,
+            (data["lat"] - lat) * 111_320.0,
+        )
+        if distance_m > max_snap_m:
+            continue
+        quality = _node_preference_quality(graph, node, weights)
+        objective = distance_m - preference_reach_m * 0.75 * quality
+        if objective < best_objective:
+            best, best_objective = node, objective
+    return best
+
+
+def _remove_immediate_retracing(segments: list[RouteSegment]) -> list[RouteSegment]:
+    """Cancel exact A→B, B→A road retraces, including multi-edge hairs."""
+    cleaned: list[RouteSegment] = []
+    for segment in segments:
+        if cleaned:
+            previous = cleaned[-1]
+            if (
+                previous.road_id == segment.road_id
+                and previous.coords[0] == segment.coords[-1]
+                and previous.coords[-1] == segment.coords[0]
+            ):
+                cleaned.pop()
+                continue
+        cleaned.append(segment)
+    return cleaned
 
 
 def _edges_to_segments(graph, path, weight_key: str, seen_edges: set, is_connector: bool):
@@ -432,14 +543,19 @@ def _path_with_fallback(network: RoadNetwork, a, b):
         )
         # Only pay for a second path search when the scenic path is already
         # suspicious relative to the geometric lower bound.
-        if direct_distance and fun_length > direct_distance * MAX_LEG_STRETCH:
+        stretch_limit = MAX_LEG_STRETCH + MAX_PREFERENCE_STRETCH_BONUS * max(
+            network.weights.get("curviness", 0.0),
+            network.weights.get("scenery", 0.0),
+            network.weights.get("landmarks", 0.0),
+        )
+        if direct_distance and fun_length > direct_distance * stretch_limit:
             short_path = nx.shortest_path(network.scenic, a, b, weight="length_m")
             short_length = sum(
                 min(edges.values(), key=lambda edge: edge["length_m"])["length_m"]
                 for u, v in zip(short_path, short_path[1:])
                 for edges in [network.scenic[u][v]]
             )
-            if fun_length > short_length * MAX_LEG_STRETCH:
+            if fun_length > short_length * stretch_limit:
                 logger.info(
                     "Capped scenic detour from %.0fm to %.0fm for leg %s -> %s.",
                     fun_length, short_length, a, b,
@@ -458,6 +574,7 @@ def _path_with_fallback(network: RoadNetwork, a, b):
 
 def _connect_to_scenic_network(
     network: RoadNetwork, pin_lon: float, pin_lat: float, *, from_scenic: bool = False,
+    candidates: set | None = None,
 ):
     """Finds the shortest real path (via the FULL graph, residential roads
     allowed) from an arbitrary pin to the nearest point that exists on the
@@ -468,7 +585,7 @@ def _connect_to_scenic_network(
     if start_node is None:
         return None, []
 
-    scenic_nodes = set(network.scenic.nodes)
+    scenic_nodes = candidates if candidates is not None else set(network.scenic.nodes)
     if not scenic_nodes:
         return None, []
 
@@ -494,7 +611,36 @@ def _connect_to_scenic_network(
     return entry_node, connector_segments
 
 
-def _pick_waypoints(graph, anchor_node, target_distance_m: float, n_waypoints: int = 4):
+def _round_trip_scenic_nodes(graph, minimum_component_size: int = 25) -> set:
+    """Nodes in substantial directed components that can support a real loop."""
+    qualifying = set()
+    largest = set()
+    for component in nx.strongly_connected_components(graph):
+        if len(component) > len(largest):
+            largest = set(component)
+        if len(component) >= minimum_component_size:
+            qualifying.update(component)
+    return qualifying or largest
+
+
+def _connect_loop_start(network: RoadNetwork, pin_lon: float, pin_lat: float):
+    """Find legal outbound and return connectors to the loop-capable network."""
+    round_trip_nodes = _round_trip_scenic_nodes(network.scenic)
+    if not round_trip_nodes:
+        return None, [], None, [], set()
+    entry, connector_out = _connect_to_scenic_network(
+        network, pin_lon, pin_lat, candidates=round_trip_nodes,
+    )
+    exit_node, connector_back = _connect_to_scenic_network(
+        network, pin_lon, pin_lat, from_scenic=True, candidates=round_trip_nodes,
+    )
+    return entry, connector_out, exit_node, connector_back, round_trip_nodes
+
+
+def _pick_waypoints(
+    graph, anchor_node, target_distance_m: float, weights: dict,
+    candidates: set | None = None, n_waypoints: int = 4,
+):
     """Picks rough anchor points forming a loop shape around the anchor, at
     about target_distance / n_waypoints from each other. These are just
     geometric targets -- the actual road selection happens in the weighted
@@ -506,6 +652,7 @@ def _pick_waypoints(graph, anchor_node, target_distance_m: float, n_waypoints: i
     meters_per_deg_lat = 111_320.0
     meters_per_deg_lon = 111_320.0 * math.cos(math.radians(anchor_lat))
 
+    waypoint_candidates = _safe_waypoint_nodes(graph, candidates)
     waypoints = []
     base_angle = random.uniform(0, 2 * math.pi)
     for i in range(1, n_waypoints):
@@ -513,23 +660,33 @@ def _pick_waypoints(graph, anchor_node, target_distance_m: float, n_waypoints: i
         radius_m = leg_distance_m * n_waypoints / (2 * math.pi) * 1.1
         target_lon = anchor_lon + (radius_m * math.cos(angle)) / meters_per_deg_lon
         target_lat = anchor_lat + (radius_m * math.sin(angle)) / meters_per_deg_lat
-        waypoints.append(_nearest_node(graph, target_lon, target_lat))
+        waypoints.append(_nearest_preferred_node(
+            graph, target_lon, target_lat, candidates=waypoint_candidates,
+            weights=weights, preference_reach_m=max(1800.0, radius_m * 0.55),
+        ))
     return waypoints
 
 
 def generate_loop(
     network: RoadNetwork, start_lon: float, start_lat: float, target_distance_m: float,
 ):
-    entry_node, connector_out = _connect_to_scenic_network(network, start_lon, start_lat)
-    if entry_node is None:
+    entry_node, connector_out, exit_node, connector_back, round_trip_nodes = (
+        _connect_loop_start(network, start_lon, start_lat)
+    )
+    if entry_node is None or exit_node is None:
         return None
 
-    waypoints = _pick_waypoints(network.scenic, entry_node, target_distance_m)
+    waypoints = _pick_waypoints(
+        network.scenic, entry_node, target_distance_m, network.weights,
+        candidates=round_trip_nodes,
+    )
+    logger.info("Freeform loop selected %d distinct waypoint anchors.", len(set(waypoints)))
     if any(waypoint is None for waypoint in waypoints):
         return None
-    stops = [entry_node] + waypoints + [entry_node]
+    stops = [entry_node] + waypoints + [exit_node]
 
     route = GeneratedRoute()
+    route_body = []
     seen_edges: set = set()
 
     for seg in connector_out:
@@ -544,17 +701,24 @@ def generate_loop(
         except (nx.NetworkXNoPath, nx.NodeNotFound):
             logger.warning("No complete loop path between %s and %s.", a, b)
             return None
-        for seg in _edges_to_segments(graph_used, path, "cost", seen_edges, is_connector=False):
-            route.segments.append(seg)
-            route.total_length_m += seg.length_m
+        route_body.extend(
+            _edges_to_segments(graph_used, path, "cost", seen_edges, is_connector=False)
+        )
 
-    # Return to the exact starting pin the same way we left -- this is the
-    # only way back to a literal driveway, and reusing the same connector
-    # (rather than searching for a fresh residential path back) keeps the
-    # "how much of this is actually a neighborhood street" footprint minimal
-    # and predictable.
-    for seg in reversed(connector_out):
-        seg = _reversed_segment(seg)
+    cleaned_body = _remove_immediate_retracing(route_body)
+    logger.info(
+        "Freeform retrace cleanup retained %d of %d route-body segments.",
+        len(cleaned_body), len(route_body),
+    )
+    if not cleaned_body:
+        return None
+    for seg in cleaned_body:
+        route.segments.append(seg)
+        route.total_length_m += seg.length_m
+
+    # The return connector is searched independently so one-way restrictions
+    # remain legal; it may differ from the outbound neighbourhood path.
+    for seg in connector_back:
         route.segments.append(seg)
         route.total_length_m += seg.length_m
 
@@ -577,8 +741,10 @@ def generate_exploration_loop(
     reaches its nearby scenic network, samples roads around it, then returns
     to the original start.
     """
-    entry_node, connector_out = _connect_to_scenic_network(network, start_lon, start_lat)
-    if entry_node is None:
+    entry_node, connector_out, exit_node, connector_back, round_trip_nodes = (
+        _connect_loop_start(network, start_lon, start_lat)
+    )
+    if entry_node is None or exit_node is None:
         return None
 
     # Exploration anchors must all live in the same round-trip-capable road
@@ -592,12 +758,16 @@ def generate_exploration_loop(
             break
     if not routable_full_nodes:
         return None
-    routable_scenic_nodes = set(network.scenic.nodes).intersection(routable_full_nodes)
+    routable_scenic_nodes = (
+        set(network.scenic.nodes).intersection(routable_full_nodes).intersection(round_trip_nodes)
+    )
     if not routable_scenic_nodes:
         return None
+    waypoint_candidates = _safe_waypoint_nodes(network.scenic, routable_scenic_nodes)
 
-    focus_node = _nearest_node(
-        network.scenic, focus_lon, focus_lat, candidates=routable_scenic_nodes
+    focus_node = _nearest_preferred_node(
+        network.scenic, focus_lon, focus_lat, candidates=waypoint_candidates,
+        weights=network.weights, preference_reach_m=2200.0,
     )
     if focus_node is None:
         return None
@@ -634,8 +804,10 @@ def generate_exploration_loop(
             angle = away_angle + rotation + offset
             target_lon = focus_node_lon + local_radius_m * math.cos(angle) / meters_per_deg_lon
             target_lat = focus_node_lat + local_radius_m * math.sin(angle) / 111_320.0
-            node = _nearest_node(
-                network.scenic, target_lon, target_lat, candidates=routable_scenic_nodes
+            node = _nearest_preferred_node(
+                network.scenic, target_lon, target_lat, candidates=waypoint_candidates,
+                weights=network.weights,
+                preference_reach_m=max(1800.0, local_radius_m * 0.5),
             )
             if node is None:
                 snap_error = float("inf")
@@ -660,6 +832,13 @@ def generate_exploration_loop(
                     local_radius_m * 0.7 * network.weights.get("scenery", 0.0)
                     * local_scenery
                 )
+                local_landmark = max(
+                    edge[2].get("landmark_score", 0.0) for edge in nearby_edges
+                )
+                snap_error -= (
+                    local_radius_m * 0.9 * network.weights.get("landmarks", 0.0)
+                    * local_landmark
+                )
             candidate_waypoints.append(node)
         # Avoid a collapsed "circuit" where multiple desired anchors snap to
         # the same boundary node.
@@ -671,8 +850,9 @@ def generate_exploration_loop(
     if any(waypoint is None for waypoint in local_waypoints):
         return None
 
-    stops = [entry_node, focus_node, *local_waypoints, entry_node]
+    stops = [entry_node, focus_node, *local_waypoints, exit_node]
     route = GeneratedRoute()
+    route_body = []
     for seg in connector_out:
         route.segments.append(seg)
         route.total_length_m += seg.length_m
@@ -685,12 +865,18 @@ def generate_exploration_loop(
         except (nx.NetworkXNoPath, nx.NodeNotFound):
             logger.warning("No complete exploration-loop path between %s and %s.", a, b)
             return None
-        for seg in _edges_to_segments(graph_used, path, "cost", set(), is_connector=False):
-            route.segments.append(seg)
-            route.total_length_m += seg.length_m
+        route_body.extend(
+            _edges_to_segments(graph_used, path, "cost", set(), is_connector=False)
+        )
 
-    for seg in reversed(connector_out):
-        seg = _reversed_segment(seg)
+    cleaned_body = _remove_immediate_retracing(route_body)
+    if not cleaned_body:
+        return None
+    for seg in cleaned_body:
+        route.segments.append(seg)
+        route.total_length_m += seg.length_m
+
+    for seg in connector_back:
         route.segments.append(seg)
         route.total_length_m += seg.length_m
 

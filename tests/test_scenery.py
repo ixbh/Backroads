@@ -13,6 +13,9 @@ class SceneryTests(unittest.TestCase):
         self.assertEqual(category_for(FakeTags(natural="water")), "water")
         self.assertEqual(category_for(FakeTags(landuse="forest")), "forest")
         self.assertEqual(category_for(FakeTags(tourism="viewpoint")), "viewpoint")
+        self.assertEqual(category_for(FakeTags(tourism="attraction")), "attraction")
+        self.assertEqual(category_for(FakeTags(historic="monument")), "monument")
+        self.assertEqual(category_for(FakeTags(boundary="national_park")), "park")
         self.assertIsNone(category_for(FakeTags(waterway="stream")))
         self.assertIsNone(category_for(FakeTags(leisure="park")))
         self.assertIsNone(category_for(FakeTags(shop="supermarket")))
@@ -23,6 +26,7 @@ class SceneryTests(unittest.TestCase):
             score_signals({"water", "forest", "park", "countryside", "natural", "viewpoint"}),
             100,
         )
+        self.assertEqual(score_signals({"water", "attraction", "monument"}), 30)
 
 
 if __name__ == "__main__":

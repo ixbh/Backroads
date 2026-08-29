@@ -17,16 +17,18 @@ from __future__ import annotations
 
 import gc
 import os
+import random
 import threading
 import time
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from geocoding import GeocodingError, geocoder_from_environment
 from road_store import RoadStoreConfigurationError, open_road_source
 from routing import (
     build_network,
@@ -45,6 +47,7 @@ NETWORK_CACHE_TTL_SECONDS = 300
 _network_cache: tuple[tuple, float, object] | None = None
 _network_cache_lock = threading.Lock()
 _route_generation_lock = threading.Lock()
+_geocoder = geocoder_from_environment()
 
 app = FastAPI(title="Scenic Route Generator API")
 
@@ -77,6 +80,7 @@ def _get_network(region, center_lon, center_lat, radius_m, weights):
         region, round(center_lon, 5), round(center_lat, 5), round(radius_m, -1),
         round(weights["curviness"], 2), round(weights["traffic"], 2),
         round(weights["city_avoidance"], 2), round(weights["scenery"], 2),
+        round(weights.get("landmarks", 0.0), 2),
         bool(weights["paved_only"]),
     )
     now = time.monotonic()
@@ -133,6 +137,10 @@ class RouteRequest(BaseModel):
         description="Strength of the penalty derived from nearby OSM stop/signal density.",
     )
     scenery_weight: float = Field(default=0.5, ge=0, le=1)
+    landmark_weight: float = Field(
+        default=0.0, ge=0, le=1,
+        description="Bias toward OSM parks, viewpoints, attractions, and monuments.",
+    )
     paved_only: bool = Field(
         default=True,
         description="Exclude roads explicitly tagged unpaved and require tracks to have an explicit paved surface.",
@@ -157,6 +165,14 @@ class RouteSegmentOut(BaseModel):
     scenery_signals: dict
     scenic_eligible: bool
     is_connector: bool
+
+
+class GeocodeResultOut(BaseModel):
+    display_name: str
+    lat: float
+    lon: float
+    category: str | None = None
+    result_type: str | None = None
 
 
 class RouteResponse(BaseModel):
@@ -257,6 +273,21 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/geocode", response_model=list[GeocodeResultOut])
+def geocode_address(
+    q: str = Query(min_length=3, max_length=240),
+    near_lat: float | None = Query(default=None, ge=-90, le=90),
+    near_lon: float | None = Query(default=None, ge=-180, le=180),
+):
+    """Resolve an explicit address search through the configured provider."""
+    if (near_lat is None) != (near_lon is None):
+        raise HTTPException(422, "near_lat and near_lon must be provided together.")
+    try:
+        return _geocoder.search(q, near_lat=near_lat, near_lon=near_lon)
+    except GeocodingError as error:
+        raise HTTPException(502, str(error)) from error
+
+
 @app.get("/", include_in_schema=False)
 def viewer():
     """Serve the map and API from one HTTPS origin in production."""
@@ -330,6 +361,7 @@ def _generate_route(req: RouteRequest):
             "traffic": req.traffic_weight,
             "city_avoidance": req.city_avoidance,
             "scenery": req.scenery_weight,
+            "landmarks": req.landmark_weight,
             "paved_only": req.paved_only,
         },
     )
@@ -364,7 +396,29 @@ def _generate_route(req: RouteRequest):
                     route = refined_route
         route_kind = "exploration_loop"
     else:
-        route = generate_loop(network, req.start_lon, req.start_lat, target_distance_m)
+        loop_random_state = random.getstate()
+        generation_target_m = target_distance_m
+        route = None
+        # Reuse the same orientation for up to two refinements; otherwise a
+        # new random shape is not a meaningful distance correction. Graph
+        # construction is already complete, so these extra searches are cheap.
+        for _attempt in range(3):
+            random.setstate(loop_random_state)
+            candidate = generate_loop(
+                network, req.start_lon, req.start_lat, generation_target_m,
+            )
+            if candidate and (
+                route is None
+                or abs(candidate.total_length_m - target_distance_m)
+                < abs(route.total_length_m - target_distance_m)
+            ):
+                route = candidate
+            if not candidate or candidate.total_length_m <= 0:
+                break
+            distance_ratio = target_distance_m / candidate.total_length_m
+            if 0.9 <= distance_ratio <= 1.1:
+                break
+            generation_target_m *= max(0.6, min(1.4, distance_ratio))
         route_kind = "loop"
 
     if route is None:

@@ -12,7 +12,11 @@ downloaded zip's Properties dialog, select it before choosing Extract All.
 Only run beta copies received directly from the Backroad developer.
 
 The road graph and scenic scores run locally on this computer. An internet
-connection is still required for the OpenFreeMap basemap tiles.
+connection is still required for the OpenFreeMap basemap tiles and optional
+address searches. You can always set points by clicking the map instead.
+
+Address searches are sent only after you press Use address. The default
+provider is OpenStreetMap Nominatim; do not enter confidential information.
 
 This is exploratory beta software, not navigation-grade guidance. Verify road
 access, conditions, closures, and pavement before driving. The paved-only
